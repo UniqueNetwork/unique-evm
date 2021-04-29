@@ -79,13 +79,14 @@ impl<'config> StackSubstateMetadata<'config> {
 	}
 }
 
-pub struct PrecompileOutput(pub ExitReason, pub Vec<u8>, pub u64);
+pub struct PrecompileLog(pub H160, pub Vec<H256>, pub Vec<u8>);
+pub struct PrecompileOutput(pub ExitReason, pub Vec<u8>, pub u64, pub Vec<PrecompileLog>);
 
 impl From<Result<(ExitSucceed, Vec<u8>, u64), ExitError>> for PrecompileOutput {
 	fn from(value: Result<(ExitSucceed, Vec<u8>, u64), ExitError>) -> Self {
 		match value {
-			Ok((succeed, value, gas)) => Self(ExitReason::Succeed(succeed), value, gas),
-			Err(error) => Self(ExitReason::Error(error), Vec::new(), 0),
+			Ok((succeed, value, gas)) => Self(ExitReason::Succeed(succeed), value, gas, Vec::new()),
+			Err(error) => Self(ExitReason::Error(error), Vec::new(), 0, Vec::new()),
 		}
 	}
 }
@@ -534,7 +535,10 @@ impl<'config, S: StackState<'config>> StackExecutor<'config, S> {
 			}
 		}
 
-		if let Some(PrecompileOutput(reason, out, cost)) = (self.precompile)(code_address, &input, Some(gas_limit), &context) {
+		if let Some(PrecompileOutput(reason, out, cost, logs)) = (self.precompile)(code_address, &input, Some(gas_limit), &context) {
+			for log in logs {
+				let _ = self.log(log.0, log.1, log.2);
+			}
 			match &reason {
 				ExitReason::Succeed(_) => {
 					let _ = self.state.metadata_mut().gasometer.record_cost(cost);
