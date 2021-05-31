@@ -7,7 +7,8 @@ use alloc::{rc::Rc, vec::Vec};
 use primitive_types::{U256, H256, H160};
 use sha3::{Keccak256, Digest};
 use crate::{ExitError, Stack, Opcode, Capture, Handler, Transfer,
-			Context, CreateScheme, Runtime, ExitReason, ExitSucceed, Config};
+			Context, CreateScheme, Runtime, ExitReason, Config};
+use ethereum::Log;
 use crate::gasometer::{self, Gasometer};
 
 pub enum StackExitKind {
@@ -79,16 +80,12 @@ impl<'config> StackSubstateMetadata<'config> {
 	}
 }
 
-pub struct PrecompileLog(pub H160, pub Vec<H256>, pub Vec<u8>);
-pub struct PrecompileOutput(pub ExitReason, pub Vec<u8>, pub u64, pub Vec<PrecompileLog>);
-
-impl From<Result<(ExitSucceed, Vec<u8>, u64), ExitError>> for PrecompileOutput {
-	fn from(value: Result<(ExitSucceed, Vec<u8>, u64), ExitError>) -> Self {
-		match value {
-			Ok((succeed, value, gas)) => Self(ExitReason::Succeed(succeed), value, gas, Vec::new()),
-			Err(error) => Self(ExitReason::Error(error), Vec::new(), 0, Vec::new()),
-		}
-	}
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct PrecompileOutput {
+	pub exit_status: ExitReason,
+	pub cost: u64,
+	pub output: Vec<u8>,
+	pub logs: Vec<Log>,
 }
 
 /// Stack-based executor.
@@ -340,6 +337,17 @@ impl<'config, S: StackState<'config>> StackExecutor<'config, S> {
 			gas - gas / 64
 		}
 
+		let address = self.create_address(scheme);
+
+		event!(Create {
+			caller,
+			address,
+			scheme,
+			value,
+			init_code: &init_code,
+			target_gas
+		});
+
 		if let Some(depth) = self.state.metadata().depth {
 			if depth > self.config.call_stack_limit {
 				return Capture::Exit((ExitError::CallTooDeep.into(), None, Vec::new()))
@@ -370,7 +378,6 @@ impl<'config, S: StackState<'config>> StackExecutor<'config, S> {
 			self.state.metadata_mut().gasometer.record_cost(gas_limit)
 		);
 
-		let address = self.create_address(scheme);
 		self.state.inc_nonce(caller);
 
 		self.enter_substate(gas_limit, false);
@@ -487,6 +494,15 @@ impl<'config, S: StackState<'config>> StackExecutor<'config, S> {
 			gas - gas / 64
 		}
 
+		event!(Call {
+			code_address,
+			transfer: &transfer,
+			input: &input,
+			target_gas,
+			is_static,
+			context: &context,
+		});
+
 		let after_gas = if take_l64 && self.config.call_l64_after_gas {
 			if self.config.estimate {
 				let initial_after_gas = self.state.metadata().gasometer.gas();
@@ -535,21 +551,26 @@ impl<'config, S: StackState<'config>> StackExecutor<'config, S> {
 			}
 		}
 
-		if let Some(PrecompileOutput(reason, out, cost, logs)) = (self.precompile)(code_address, &input, Some(gas_limit), &context) {
-			for log in logs {
-				let _ = self.log(log.0, log.1, log.2);
-			}
-			match &reason {
+		if let Some(ret) = (self.precompile)(code_address, &input, Some(gas_limit), &context) {
+			match ret.exit_status {
 				ExitReason::Succeed(_) => {
-					let _ = self.state.metadata_mut().gasometer.record_cost(cost);
+					for Log { address, topics, data} in ret.logs {
+						match self.log(address, topics, data) {
+							Ok(_) => continue,
+							Err(error) => {
+								return Capture::Exit((ExitReason::Error(error), ret.output));
+							}
+						}
+					}
+					let _ = self.state.metadata_mut().gasometer.record_cost(ret.cost);
 					let _ = self.exit_substate(StackExitKind::Succeeded);
 				},
 				ExitReason::Revert(_) => {
-					let _ = self.state.metadata_mut().gasometer.record_cost(cost);
+					let _ = self.state.metadata_mut().gasometer.record_cost(ret.cost);
 					let _ = self.exit_substate(StackExitKind::Reverted);
 				},
 				ExitReason::Error(_) => {
-					let _ = self.state.metadata_mut().gasometer.record_cost(cost);
+					let _ = self.state.metadata_mut().gasometer.record_cost(ret.cost);
 					let _ = self.exit_substate(StackExitKind::Failed);
 				},
 				ExitReason::Fatal(_) => {
@@ -558,7 +579,7 @@ impl<'config, S: StackState<'config>> StackExecutor<'config, S> {
 				},
 			}
 
-			return Capture::Exit((reason, out));
+			return Capture::Exit((ret.exit_status, ret.output));
 		}
 
 		let mut runtime = Runtime::new(
@@ -666,9 +687,15 @@ impl<'config, S: StackState<'config>> Handler for StackExecutor<'config, S> {
 	fn mark_delete(&mut self, address: H160, target: H160) -> Result<(), ExitError> {
 		let balance = self.balance(address);
 
+		event!(Suicide {
+			target,
+			address,
+			balance,
+		});
+
 		self.state.transfer(Transfer {
 			source: address,
-			target: target,
+			target,
 			value: balance,
 		})?;
 		self.state.reset_balance(address);
