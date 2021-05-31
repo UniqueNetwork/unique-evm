@@ -88,6 +88,17 @@ pub struct PrecompileOutput {
 	pub logs: Vec<Log>,
 }
 
+impl From<ExitError> for PrecompileOutput {
+	fn from(err: ExitError) -> Self {
+		Self {
+			exit_status: ExitReason::Error(err),
+			cost: 0,
+			output: Default::default(),
+			logs: Default::default(),
+		}
+	}
+}
+
 /// Stack-based executor.
 pub struct StackExecutor<'config, S> {
 	config: &'config Config,
