@@ -7,7 +7,7 @@ use alloc::{rc::Rc, vec::Vec};
 use primitive_types::{U256, H256, H160};
 use sha3::{Keccak256, Digest};
 use crate::{ExitError, Stack, Opcode, Capture, Handler, Transfer,
-			Context, CreateScheme, Runtime, ExitReason, ExitSucceed, Config};
+			Context, CreateScheme, Runtime, ExitReason, Config};
 use ethereum::Log;
 use crate::gasometer::{self, Gasometer};
 
@@ -82,16 +82,27 @@ impl<'config> StackSubstateMetadata<'config> {
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct PrecompileOutput {
-	pub exit_status: ExitSucceed,
+	pub exit_status: ExitReason,
 	pub cost: u64,
 	pub output: Vec<u8>,
 	pub logs: Vec<Log>,
 }
 
+impl From<ExitError> for PrecompileOutput {
+	fn from(err: ExitError) -> Self {
+		Self {
+			exit_status: ExitReason::Error(err),
+			cost: 0,
+			output: Default::default(),
+			logs: Default::default(),
+		}
+	}
+}
+
 /// Stack-based executor.
 pub struct StackExecutor<'config, S> {
 	config: &'config Config,
-	precompile: fn(H160, &[u8], Option<u64>, &Context) -> Option<Result<PrecompileOutput, ExitError>>,
+	precompile: fn(H160, &[u8], Option<u64>, &Context) -> Option<PrecompileOutput>,
 	state: S,
 }
 
@@ -100,7 +111,7 @@ fn no_precompile(
 	_input: &[u8],
 	_target_gas: Option<u64>,
 	_context: &Context,
-) -> Option<Result<PrecompileOutput, ExitError>> {
+) -> Option<PrecompileOutput> {
 	None
 }
 
@@ -124,7 +135,7 @@ impl<'config, S: StackState<'config>> StackExecutor<'config, S> {
 	pub fn new_with_precompile(
 		state: S,
 		config: &'config Config,
-		precompile: fn(H160, &[u8], Option<u64>, &Context) -> Option<Result<PrecompileOutput, ExitError>>,
+		precompile: fn(H160, &[u8], Option<u64>, &Context) -> Option<PrecompileOutput>,
 	) -> Self {
 		Self {
 			config,
@@ -552,26 +563,34 @@ impl<'config, S: StackState<'config>> StackExecutor<'config, S> {
 		}
 
 		if let Some(ret) = (self.precompile)(code_address, &input, Some(gas_limit), &context) {
-			match ret {
-				Ok(PrecompileOutput { exit_status , output, cost, logs }) => {
-					for Log { address, topics, data} in logs {
+			match ret.exit_status {
+				ExitReason::Succeed(_) => {
+					for Log { address, topics, data} in ret.logs {
 						match self.log(address, topics, data) {
 							Ok(_) => continue,
 							Err(error) => {
-								return Capture::Exit((ExitReason::Error(error), output));
+								return Capture::Exit((ExitReason::Error(error), ret.output));
 							}
 						}
 					}
-
-					let _ = self.state.metadata_mut().gasometer.record_cost(cost);
+					let _ = self.state.metadata_mut().gasometer.record_cost(ret.cost);
 					let _ = self.exit_substate(StackExitKind::Succeeded);
-					return Capture::Exit((ExitReason::Succeed(exit_status), output));
 				},
-				Err(e) => {
+				ExitReason::Revert(_) => {
+					let _ = self.state.metadata_mut().gasometer.record_cost(ret.cost);
+					let _ = self.exit_substate(StackExitKind::Reverted);
+				},
+				ExitReason::Error(_) => {
+					let _ = self.state.metadata_mut().gasometer.record_cost(ret.cost);
 					let _ = self.exit_substate(StackExitKind::Failed);
-					return Capture::Exit((ExitReason::Error(e), Vec::new()));
+				},
+				ExitReason::Fatal(_) => {
+					self.state.metadata_mut().gasometer.fail();
+					let _ = self.exit_substate(StackExitKind::Failed);
 				},
 			}
+
+			return Capture::Exit((ret.exit_status, ret.output));
 		}
 
 		let mut runtime = Runtime::new(
