@@ -10,6 +10,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Rustfmt
+      run: cargo fmt --all -- --check
+    - name: Clippy
+      run: cargo clippy --all
   build:
     runs-on: ubuntu-latest
     steps:
@@ -28,7 +36,7 @@ jobs:
     - name: Submodules
       run: |
         cd evm
-        git fetch
+        git fetch origin $GITHUB_SHA
         git checkout $GITHUB_SHA
     - name: Run tests
       run: |
