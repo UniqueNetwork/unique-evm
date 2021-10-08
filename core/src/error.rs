@@ -18,6 +18,7 @@ pub enum Capture<E, T> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "with-scale-info", derive(scale_info::TypeInfo))]
 pub enum ExitReason {
 	/// Machine has succeeded.
 	Succeed(ExitSucceed),
@@ -56,6 +57,7 @@ impl ExitReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "with-scale-info", derive(scale_info::TypeInfo))]
 pub enum ExitSucceed {
 	/// Machine encountered an explict stop.
 	Stopped,
@@ -75,6 +77,7 @@ impl From<ExitSucceed> for ExitReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "with-scale-info", derive(scale_info::TypeInfo))]
 pub enum ExitRevert {
 	/// Machine encountered an explict revert.
 	Reverted,
@@ -90,6 +93,7 @@ impl From<ExitRevert> for ExitReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "with-scale-info", derive(scale_info::TypeInfo))]
 pub enum ExitError {
 	/// Trying to pop from an empty stack.
 	StackUnderflow,
@@ -135,6 +139,7 @@ impl From<ExitError> for ExitReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "with-scale-info", derive(scale_info::TypeInfo))]
 pub enum ExitFatal {
 	/// The operation is not supported.
 	NotSupported,

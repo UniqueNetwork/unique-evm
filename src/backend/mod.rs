@@ -13,6 +13,7 @@ use primitive_types::{H160, H256, U256};
 #[derive(Clone, Eq, PartialEq, Debug, Default)]
 #[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "with-scale-info", derive(scale_info::TypeInfo))]
 pub struct Basic {
 	/// Account balance.
 	pub balance: U256,
