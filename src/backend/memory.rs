@@ -5,7 +5,10 @@ use primitive_types::{H160, H256, U256};
 
 /// Vivinity value of a memory backend.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
+#[cfg_attr(
+	feature = "with-codec",
+	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemoryVicinity {
 	/// Gas price.
@@ -26,11 +29,16 @@ pub struct MemoryVicinity {
 	pub block_difficulty: U256,
 	/// Environmental block gas limit.
 	pub block_gas_limit: U256,
+	/// Environmental base fee per gas.
+	pub block_base_fee_per_gas: U256,
 }
 
 /// Account information of a memory backend.
 #[derive(Default, Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
+#[cfg_attr(
+	feature = "with-codec",
+	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemoryAccount {
 	/// Account nonce.
@@ -64,6 +72,11 @@ impl<'vicinity> MemoryBackend<'vicinity> {
 	/// Get the underlying `BTreeMap` storing the state.
 	pub fn state(&self) -> &BTreeMap<H160, MemoryAccount> {
 		&self.state
+	}
+
+	/// Get a mutable reference to the underlying `BTreeMap` storing the state.
+	pub fn state_mut(&mut self) -> &mut BTreeMap<H160, MemoryAccount> {
+		&mut self.state
 	}
 }
 
@@ -99,6 +112,9 @@ impl<'vicinity> Backend for MemoryBackend<'vicinity> {
 	}
 	fn block_gas_limit(&self) -> U256 {
 		self.vicinity.block_gas_limit
+	}
+	fn block_base_fee_per_gas(&self) -> U256 {
+		self.vicinity.block_base_fee_per_gas
 	}
 
 	fn chain_id(&self) -> U256 {

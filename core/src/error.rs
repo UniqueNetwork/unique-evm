@@ -16,7 +16,10 @@ pub enum Capture<E, T> {
 
 /// Exit reason.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
+#[cfg_attr(
+	feature = "with-codec",
+	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExitReason {
 	/// Machine has succeeded.
@@ -54,7 +57,10 @@ impl ExitReason {
 
 /// Exit succeed reason.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
+#[cfg_attr(
+	feature = "with-codec",
+	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExitSucceed {
 	/// Machine encountered an explict stop.
@@ -73,7 +79,10 @@ impl From<ExitSucceed> for ExitReason {
 
 /// Exit revert reason.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
+#[cfg_attr(
+	feature = "with-codec",
+	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExitRevert {
 	/// Machine encountered an explict revert.
@@ -88,7 +97,10 @@ impl From<ExitRevert> for ExitReason {
 
 /// Exit error reason.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
+#[cfg_attr(
+	feature = "with-codec",
+	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExitError {
 	/// Trying to pop from an empty stack.
@@ -107,6 +119,8 @@ pub enum ExitError {
 	CreateCollision,
 	/// Create init code exceeds limit (runtime).
 	CreateContractLimit,
+	/// Starting byte must not begin with 0xef. See [EIP-3541](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-3541.md).
+	InvalidCode,
 
 	/// An opcode accesses external information, but the request is off offset
 	/// limit (runtime).
@@ -117,7 +131,9 @@ pub enum ExitError {
 	OutOfFund,
 
 	/// PC underflowed (unused).
+	#[allow(clippy::upper_case_acronyms)]
 	PCUnderflow,
+
 	/// Attempt to create an empty account (runtime, unused).
 	CreateEmpty,
 
@@ -133,7 +149,10 @@ impl From<ExitError> for ExitReason {
 
 /// Exit fatal reason.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "with-codec", derive(codec::Encode, codec::Decode))]
+#[cfg_attr(
+	feature = "with-codec",
+	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExitFatal {
 	/// The operation is not supported.

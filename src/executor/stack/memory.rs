@@ -1,5 +1,5 @@
 use crate::backend::{Apply, Backend, Basic, Log};
-use crate::executor::stack::StackSubstateMetadata;
+use crate::executor::stack::executor::{Accessed, StackState, StackSubstateMetadata};
 use crate::{ExitError, Transfer};
 use alloc::{
 	boxed::Box,
@@ -10,12 +10,13 @@ use core::mem;
 use primitive_types::{H160, H256, U256};
 
 #[derive(Clone, Debug)]
-struct MemoryStackAccount {
+pub struct MemoryStackAccount {
 	pub basic: Basic,
 	pub code: Option<Vec<u8>>,
 	pub reset: bool,
 }
 
+#[derive(Clone, Debug)]
 pub struct MemoryStackSubstate<'config> {
 	metadata: StackSubstateMetadata<'config>,
 	parent: Option<Box<MemoryStackSubstate<'config>>>,
@@ -35,6 +36,14 @@ impl<'config> MemoryStackSubstate<'config> {
 			storages: BTreeMap::new(),
 			deletes: BTreeSet::new(),
 		}
+	}
+
+	pub fn logs(&self) -> &[Log] {
+		&self.logs
+	}
+
+	pub fn logs_mut(&mut self) -> &mut Vec<Log> {
+		&mut self.logs
 	}
 
 	pub fn metadata(&self) -> &StackSubstateMetadata<'config> {
@@ -165,7 +174,7 @@ impl<'config> MemoryStackSubstate<'config> {
 		Ok(())
 	}
 
-	fn known_account(&self, address: H160) -> Option<&MemoryStackAccount> {
+	pub fn known_account(&self, address: H160) -> Option<&MemoryStackAccount> {
 		if let Some(account) = self.accounts.get(&address) {
 			Some(account)
 		} else if let Some(parent) = self.parent.as_ref() {
@@ -235,6 +244,26 @@ impl<'config> MemoryStackSubstate<'config> {
 		}
 
 		None
+	}
+
+	pub fn is_cold(&self, address: H160) -> bool {
+		self.recursive_is_cold(&|a| a.accessed_addresses.contains(&address))
+	}
+
+	pub fn is_storage_cold(&self, address: H160, key: H256) -> bool {
+		self.recursive_is_cold(&|a: &Accessed| a.accessed_storage.contains(&(address, key)))
+	}
+
+	fn recursive_is_cold<F: Fn(&Accessed) -> bool>(&self, f: &F) -> bool {
+		let local_is_accessed = self.metadata.accessed().as_ref().map(f).unwrap_or(false);
+		if local_is_accessed {
+			false
+		} else {
+			self.parent
+				.as_ref()
+				.map(|p| p.recursive_is_cold(f))
+				.unwrap_or(true)
+		}
 	}
 
 	pub fn deleted(&self, address: H160) -> bool {
@@ -364,29 +393,7 @@ impl<'config> MemoryStackSubstate<'config> {
 	}
 }
 
-pub trait StackState<'config>: Backend {
-	fn metadata(&self) -> &StackSubstateMetadata<'config>;
-	fn metadata_mut(&mut self) -> &mut StackSubstateMetadata<'config>;
-
-	fn enter(&mut self, gas_limit: u64, is_static: bool);
-	fn exit_commit(&mut self) -> Result<(), ExitError>;
-	fn exit_revert(&mut self) -> Result<(), ExitError>;
-	fn exit_discard(&mut self) -> Result<(), ExitError>;
-
-	fn is_empty(&self, address: H160) -> bool;
-	fn deleted(&self, address: H160) -> bool;
-
-	fn inc_nonce(&mut self, address: H160);
-	fn set_storage(&mut self, address: H160, key: H256, value: H256);
-	fn reset_storage(&mut self, address: H160);
-	fn log(&mut self, address: H160, topics: Vec<H256>, data: Vec<u8>);
-	fn set_deleted(&mut self, address: H160);
-	fn set_code(&mut self, address: H160, code: Vec<u8>);
-	fn transfer(&mut self, transfer: Transfer) -> Result<(), ExitError>;
-	fn reset_balance(&mut self, address: H160);
-	fn touch(&mut self, address: H160);
-}
-
+#[derive(Clone, Debug)]
 pub struct MemoryStackState<'backend, 'config, B> {
 	backend: &'backend B,
 	substate: MemoryStackSubstate<'config>,
@@ -417,6 +424,10 @@ impl<'backend, 'config, B: Backend> Backend for MemoryStackState<'backend, 'conf
 	fn block_gas_limit(&self) -> U256 {
 		self.backend.block_gas_limit()
 	}
+	fn block_base_fee_per_gas(&self) -> U256 {
+		self.backend.block_base_fee_per_gas()
+	}
+
 	fn chain_id(&self) -> U256 {
 		self.backend.chain_id()
 	}
@@ -489,6 +500,14 @@ impl<'backend, 'config, B: Backend> StackState<'config> for MemoryStackState<'ba
 
 	fn deleted(&self, address: H160) -> bool {
 		self.substate.deleted(address)
+	}
+
+	fn is_cold(&self, address: H160) -> bool {
+		self.substate.is_cold(address)
+	}
+
+	fn is_storage_cold(&self, address: H160, key: H256) -> bool {
+		self.substate.is_storage_cold(address, key)
 	}
 
 	fn inc_nonce(&mut self, address: H160) {

@@ -4,6 +4,8 @@
 #![forbid(unsafe_code, unused_variables)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate alloc;
+
 #[cfg(feature = "tracing")]
 pub mod tracing;
 
@@ -11,7 +13,7 @@ pub mod tracing;
 macro_rules! event {
 	($x:expr) => {
 		use crate::tracing::Event::*;
-		$x.emit();
+		crate::tracing::with(|listener| listener.event($x));
 	};
 }
 
@@ -25,6 +27,7 @@ mod costs;
 mod memory;
 mod utils;
 
+use alloc::vec::Vec;
 use core::cmp::max;
 use evm_core::{ExitError, Opcode, Stack};
 use evm_runtime::{Config, Handler};
@@ -42,6 +45,7 @@ macro_rules! try_or_fail {
 	};
 }
 
+#[cfg(feature = "tracing")]
 #[derive(Debug, Copy, Clone)]
 pub struct Snapshot {
 	pub gas_limit: u64,
@@ -51,7 +55,7 @@ pub struct Snapshot {
 }
 
 /// EVM gasometer.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Gasometer<'config> {
 	gas_limit: u64,
 	config: &'config Config,
@@ -131,7 +135,7 @@ impl<'config> Gasometer<'config> {
 	pub fn record_cost(&mut self, cost: u64) -> Result<(), ExitError> {
 		event!(RecordCost {
 			cost,
-			snapshot: self.snapshot()?,
+			snapshot: self.snapshot(),
 		});
 
 		let all_gas_cost = self.total_used_gas() + cost;
@@ -149,7 +153,7 @@ impl<'config> Gasometer<'config> {
 	pub fn record_refund(&mut self, refund: i64) -> Result<(), ExitError> {
 		event!(RecordRefund {
 			refund,
-			snapshot: self.snapshot()?,
+			snapshot: self.snapshot(),
 		});
 
 		self.inner_mut()?.refunded_gas += refund;
@@ -183,7 +187,7 @@ impl<'config> Gasometer<'config> {
 			gas_cost,
 			memory_gas,
 			gas_refund,
-			snapshot: self.snapshot()?,
+			snapshot: self.snapshot(),
 		});
 
 		let all_gas_cost = memory_gas + used_gas + gas_cost;
@@ -207,7 +211,7 @@ impl<'config> Gasometer<'config> {
 	pub fn record_stipend(&mut self, stipend: u64) -> Result<(), ExitError> {
 		event!(RecordStipend {
 			stipend,
-			snapshot: self.snapshot()?,
+			snapshot: self.snapshot(),
 		});
 
 		self.inner_mut()?.used_gas -= stipend;
@@ -220,24 +224,32 @@ impl<'config> Gasometer<'config> {
 			TransactionCost::Call {
 				zero_data_len,
 				non_zero_data_len,
+				access_list_address_len,
+				access_list_storage_len,
 			} => {
 				self.config.gas_transaction_call
 					+ zero_data_len as u64 * self.config.gas_transaction_zero_data
 					+ non_zero_data_len as u64 * self.config.gas_transaction_non_zero_data
+					+ access_list_address_len as u64 * self.config.gas_access_list_address
+					+ access_list_storage_len as u64 * self.config.gas_access_list_storage_key
 			}
 			TransactionCost::Create {
 				zero_data_len,
 				non_zero_data_len,
+				access_list_address_len,
+				access_list_storage_len,
 			} => {
 				self.config.gas_transaction_create
 					+ zero_data_len as u64 * self.config.gas_transaction_zero_data
 					+ non_zero_data_len as u64 * self.config.gas_transaction_non_zero_data
+					+ access_list_address_len as u64 * self.config.gas_access_list_address
+					+ access_list_storage_len as u64 * self.config.gas_access_list_storage_key
 			}
 		};
 
 		event!(RecordTransaction {
 			cost: gas_cost,
-			snapshot: self.snapshot()?,
+			snapshot: self.snapshot(),
 		});
 
 		if self.gas() < gas_cost {
@@ -249,9 +261,9 @@ impl<'config> Gasometer<'config> {
 		Ok(())
 	}
 
-	pub fn snapshot(&self) -> Result<Snapshot, ExitError> {
-		let inner = self.inner.as_ref().map_err(|e| e.clone())?;
-		Ok(Snapshot {
+	#[cfg(feature = "tracing")]
+	pub fn snapshot(&self) -> Option<Snapshot> {
+		self.inner.as_ref().ok().map(|inner| Snapshot {
 			gas_limit: self.gas_limit,
 			memory_gas: inner.memory_gas,
 			used_gas: inner.used_gas,
@@ -261,25 +273,41 @@ impl<'config> Gasometer<'config> {
 }
 
 /// Calculate the call transaction cost.
-pub fn call_transaction_cost(data: &[u8]) -> TransactionCost {
+#[allow(clippy::naive_bytecount)]
+pub fn call_transaction_cost(data: &[u8], access_list: &[(H160, Vec<H256>)]) -> TransactionCost {
 	let zero_data_len = data.iter().filter(|v| **v == 0).count();
 	let non_zero_data_len = data.len() - zero_data_len;
+	let (access_list_address_len, access_list_storage_len) = count_access_list(access_list);
 
 	TransactionCost::Call {
 		zero_data_len,
 		non_zero_data_len,
+		access_list_address_len,
+		access_list_storage_len,
 	}
 }
 
 /// Calculate the create transaction cost.
-pub fn create_transaction_cost(data: &[u8]) -> TransactionCost {
+#[allow(clippy::naive_bytecount)]
+pub fn create_transaction_cost(data: &[u8], access_list: &[(H160, Vec<H256>)]) -> TransactionCost {
 	let zero_data_len = data.iter().filter(|v| **v == 0).count();
 	let non_zero_data_len = data.len() - zero_data_len;
+	let (access_list_address_len, access_list_storage_len) = count_access_list(access_list);
 
 	TransactionCost::Create {
 		zero_data_len,
 		non_zero_data_len,
+		access_list_address_len,
+		access_list_storage_len,
 	}
+}
+
+/// Counts the number of addresses and storage keys in the access list
+fn count_access_list(access_list: &[(H160, Vec<H256>)]) -> (usize, usize) {
+	let access_list_address_len = access_list.len();
+	let access_list_storage_len = access_list.iter().map(|(_, keys)| keys.len()).sum();
+
+	(access_list_address_len, access_list_storage_len)
 }
 
 #[inline]
@@ -414,7 +442,8 @@ pub fn dynamic_opcode_cost<H: Handler>(
 	is_static: bool,
 	config: &Config,
 	handler: &H,
-) -> Result<(GasCost, Option<MemoryCost>), ExitError> {
+) -> Result<(GasCost, StorageTarget, Option<MemoryCost>), ExitError> {
+	let mut storage_target = StorageTarget::None;
 	let gas_cost = match opcode {
 		Opcode::RETURN => GasCost::Zero,
 
@@ -432,40 +461,87 @@ pub fn dynamic_opcode_cost<H: Handler>(
 		Opcode::SELFBALANCE if config.has_self_balance => GasCost::Low,
 		Opcode::SELFBALANCE => GasCost::Invalid,
 
-		Opcode::EXTCODESIZE => GasCost::ExtCodeSize,
-		Opcode::BALANCE => GasCost::Balance,
+		Opcode::BASEFEE if config.has_base_fee => GasCost::Base,
+		Opcode::BASEFEE => GasCost::Invalid,
+
+		Opcode::EXTCODESIZE => {
+			let target = stack.peek(0)?.into();
+			storage_target = StorageTarget::Address(target);
+			GasCost::ExtCodeSize {
+				target_is_cold: handler.is_cold(target, None),
+			}
+		}
+		Opcode::BALANCE => {
+			let target = stack.peek(0)?.into();
+			storage_target = StorageTarget::Address(target);
+			GasCost::Balance {
+				target_is_cold: handler.is_cold(target, None),
+			}
+		}
 		Opcode::BLOCKHASH => GasCost::BlockHash,
 
-		Opcode::EXTCODEHASH if config.has_ext_code_hash => GasCost::ExtCodeHash,
+		Opcode::EXTCODEHASH if config.has_ext_code_hash => {
+			let target = stack.peek(0)?.into();
+			storage_target = StorageTarget::Address(target);
+			GasCost::ExtCodeHash {
+				target_is_cold: handler.is_cold(target, None),
+			}
+		}
 		Opcode::EXTCODEHASH => GasCost::Invalid,
 
-		Opcode::CALLCODE => GasCost::CallCode {
-			value: U256::from_big_endian(&stack.peek(2)?[..]),
-			gas: U256::from_big_endian(&stack.peek(0)?[..]),
-			target_exists: handler.exists(stack.peek(1)?.into()),
-		},
-		Opcode::STATICCALL => GasCost::StaticCall {
-			gas: U256::from_big_endian(&stack.peek(0)?[..]),
-			target_exists: handler.exists(stack.peek(1)?.into()),
-		},
+		Opcode::CALLCODE => {
+			let target = stack.peek(1)?.into();
+			storage_target = StorageTarget::Address(target);
+			GasCost::CallCode {
+				value: U256::from_big_endian(&stack.peek(2)?[..]),
+				gas: U256::from_big_endian(&stack.peek(0)?[..]),
+				target_is_cold: handler.is_cold(target, None),
+				target_exists: handler.exists(target),
+			}
+		}
+		Opcode::STATICCALL => {
+			let target = stack.peek(1)?.into();
+			storage_target = StorageTarget::Address(target);
+			GasCost::StaticCall {
+				gas: U256::from_big_endian(&stack.peek(0)?[..]),
+				target_is_cold: handler.is_cold(target, None),
+				target_exists: handler.exists(target),
+			}
+		}
 		Opcode::SHA3 => GasCost::Sha3 {
 			len: U256::from_big_endian(&stack.peek(1)?[..]),
 		},
-		Opcode::EXTCODECOPY => GasCost::ExtCodeCopy {
-			len: U256::from_big_endian(&stack.peek(3)?[..]),
-		},
+		Opcode::EXTCODECOPY => {
+			let target = stack.peek(0)?.into();
+			storage_target = StorageTarget::Address(target);
+			GasCost::ExtCodeCopy {
+				target_is_cold: handler.is_cold(target, None),
+				len: U256::from_big_endian(&stack.peek(3)?[..]),
+			}
+		}
 		Opcode::CALLDATACOPY | Opcode::CODECOPY => GasCost::VeryLowCopy {
 			len: U256::from_big_endian(&stack.peek(2)?[..]),
 		},
 		Opcode::EXP => GasCost::Exp {
 			power: U256::from_big_endian(&stack.peek(1)?[..]),
 		},
-		Opcode::SLOAD => GasCost::SLoad,
+		Opcode::SLOAD => {
+			let index = stack.peek(0)?;
+			storage_target = StorageTarget::Slot(address, index);
+			GasCost::SLoad {
+				target_is_cold: handler.is_cold(address, Some(index)),
+			}
+		}
 
-		Opcode::DELEGATECALL if config.has_delegate_call => GasCost::DelegateCall {
-			gas: U256::from_big_endian(&stack.peek(0)?[..]),
-			target_exists: handler.exists(stack.peek(1)?.into()),
-		},
+		Opcode::DELEGATECALL if config.has_delegate_call => {
+			let target = stack.peek(1)?.into();
+			storage_target = StorageTarget::Address(target);
+			GasCost::DelegateCall {
+				gas: U256::from_big_endian(&stack.peek(0)?[..]),
+				target_is_cold: handler.is_cold(target, None),
+				target_exists: handler.exists(target),
+			}
+		}
 		Opcode::DELEGATECALL => GasCost::Invalid,
 
 		Opcode::RETURNDATASIZE if config.has_return_data => GasCost::Base,
@@ -477,11 +553,13 @@ pub fn dynamic_opcode_cost<H: Handler>(
 		Opcode::SSTORE if !is_static => {
 			let index = stack.peek(0)?;
 			let value = stack.peek(1)?;
+			storage_target = StorageTarget::Slot(address, index);
 
 			GasCost::SStore {
 				original: handler.original_storage(address, index),
 				current: handler.storage(address, index),
 				new: value,
+				target_is_cold: handler.is_cold(address, Some(index)),
 			}
 		}
 		Opcode::LOG0 if !is_static => GasCost::Log {
@@ -508,19 +586,27 @@ pub fn dynamic_opcode_cost<H: Handler>(
 		Opcode::CREATE2 if !is_static && config.has_create2 => GasCost::Create2 {
 			len: U256::from_big_endian(&stack.peek(2)?[..]),
 		},
-		Opcode::SUICIDE if !is_static => GasCost::Suicide {
-			value: handler.balance(address),
-			target_exists: handler.exists(stack.peek(0)?.into()),
-			already_removed: handler.deleted(address),
-		},
+		Opcode::SUICIDE if !is_static => {
+			let target = stack.peek(0)?.into();
+			storage_target = StorageTarget::Address(target);
+			GasCost::Suicide {
+				value: handler.balance(address),
+				target_is_cold: handler.is_cold(target, None),
+				target_exists: handler.exists(target),
+				already_removed: handler.deleted(address),
+			}
+		}
 		Opcode::CALL
 			if !is_static
 				|| (is_static && U256::from_big_endian(&stack.peek(2)?[..]) == U256::zero()) =>
 		{
+			let target = stack.peek(1)?.into();
+			storage_target = StorageTarget::Address(target);
 			GasCost::Call {
 				value: U256::from_big_endian(&stack.peek(2)?[..]),
 				gas: U256::from_big_endian(&stack.peek(0)?[..]),
-				target_exists: handler.exists(stack.peek(1)?.into()),
+				target_is_cold: handler.is_cold(target, None),
+				target_exists: handler.exists(target),
 			}
 		}
 
@@ -590,11 +676,11 @@ pub fn dynamic_opcode_cost<H: Handler>(
 		_ => None,
 	};
 
-	Ok((gas_cost, memory_cost))
+	Ok((gas_cost, storage_target, memory_cost))
 }
 
 /// Holds the gas consumption for a Gasometer instance.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Inner<'config> {
 	memory_gas: u64,
 	used_gas: u64,
@@ -641,40 +727,76 @@ impl<'config> Inner<'config> {
 		Ok(match cost {
 			GasCost::Call {
 				value,
+				target_is_cold,
 				target_exists,
 				..
-			} => costs::call_cost(value, true, true, !target_exists, self.config),
+			} => costs::call_cost(
+				value,
+				target_is_cold,
+				true,
+				true,
+				!target_exists,
+				self.config,
+			),
 			GasCost::CallCode {
 				value,
+				target_is_cold,
 				target_exists,
 				..
-			} => costs::call_cost(value, true, false, !target_exists, self.config),
-			GasCost::DelegateCall { target_exists, .. } => {
-				costs::call_cost(U256::zero(), false, false, !target_exists, self.config)
-			}
-			GasCost::StaticCall { target_exists, .. } => {
-				costs::call_cost(U256::zero(), false, true, !target_exists, self.config)
-			}
+			} => costs::call_cost(
+				value,
+				target_is_cold,
+				true,
+				false,
+				!target_exists,
+				self.config,
+			),
+			GasCost::DelegateCall {
+				target_is_cold,
+				target_exists,
+				..
+			} => costs::call_cost(
+				U256::zero(),
+				target_is_cold,
+				false,
+				false,
+				!target_exists,
+				self.config,
+			),
+			GasCost::StaticCall {
+				target_is_cold,
+				target_exists,
+				..
+			} => costs::call_cost(
+				U256::zero(),
+				target_is_cold,
+				false,
+				true,
+				!target_exists,
+				self.config,
+			),
+
 			GasCost::Suicide {
 				value,
+				target_is_cold,
 				target_exists,
 				..
-			} => costs::suicide_cost(value, target_exists, self.config),
+			} => costs::suicide_cost(value, target_is_cold, target_exists, self.config),
 			GasCost::SStore { .. } if self.config.estimate => self.config.gas_sstore_set,
 			GasCost::SStore {
 				original,
 				current,
 				new,
-			} => costs::sstore_cost(original, current, new, gas, self.config)?,
+				target_is_cold,
+			} => costs::sstore_cost(original, current, new, gas, target_is_cold, self.config)?,
 
 			GasCost::Sha3 { len } => costs::sha3_cost(len)?,
 			GasCost::Log { n, len } => costs::log_cost(n, len)?,
-			GasCost::ExtCodeCopy { len } => costs::extcodecopy_cost(len, self.config)?,
 			GasCost::VeryLowCopy { len } => costs::verylowcopy_cost(len)?,
 			GasCost::Exp { power } => costs::exp_cost(power, self.config)?,
 			GasCost::Create => consts::G_CREATE,
 			GasCost::Create2 { len } => costs::create2_cost(len)?,
-			GasCost::SLoad => self.config.gas_sload,
+			GasCost::SLoad { target_is_cold } => costs::sload_cost(target_is_cold, self.config),
 
 			GasCost::Zero => consts::G_ZERO,
 			GasCost::Base => consts::G_BASE,
@@ -682,10 +804,22 @@ impl<'config> Inner<'config> {
 			GasCost::Low => consts::G_LOW,
 			GasCost::Invalid => return Err(ExitError::OutOfGas),
 
-			GasCost::ExtCodeSize => self.config.gas_ext_code,
-			GasCost::Balance => self.config.gas_balance,
+			GasCost::ExtCodeSize { target_is_cold } => {
+				costs::address_access_cost(target_is_cold, self.config.gas_ext_code, self.config)
+			}
+			GasCost::ExtCodeCopy {
+				target_is_cold,
+				len,
+			} => costs::extcodecopy_cost(len, target_is_cold, self.config)?,
+			GasCost::Balance { target_is_cold } => {
+				costs::address_access_cost(target_is_cold, self.config.gas_balance, self.config)
+			}
 			GasCost::BlockHash => consts::G_BLOCKHASH,
-			GasCost::ExtCodeHash => self.config.gas_ext_code_hash,
+			GasCost::ExtCodeHash { target_is_cold } => costs::address_access_cost(
+				target_is_cold,
+				self.config.gas_ext_code_hash,
+				self.config,
+			),
 		})
 	}
 
@@ -697,10 +831,11 @@ impl<'config> Inner<'config> {
 				original,
 				current,
 				new,
+				..
 			} => costs::sstore_refund(original, current, new, self.config),
 			GasCost::Suicide {
 				already_removed, ..
-			} => costs::suicide_refund(already_removed),
+			} if !self.config.decrease_clears_refund => costs::suicide_refund(already_removed),
 			_ => 0,
 		}
 	}
@@ -721,13 +856,22 @@ pub enum GasCost {
 	Invalid,
 
 	/// Gas cost for `EXTCODESIZE`.
-	ExtCodeSize,
+	ExtCodeSize {
+		/// True if address has not been previously accessed in this transaction
+		target_is_cold: bool,
+	},
 	/// Gas cost for `BALANCE`.
-	Balance,
+	Balance {
+		/// True if address has not been previously accessed in this transaction
+		target_is_cold: bool,
+	},
 	/// Gas cost for `BLOCKHASH`.
 	BlockHash,
 	/// Gas cost for `EXTBLOCKHASH`.
-	ExtCodeHash,
+	ExtCodeHash {
+		/// True if address has not been previously accessed in this transaction
+		target_is_cold: bool,
+	},
 
 	/// Gas cost for `CALL`.
 	Call {
@@ -735,6 +879,8 @@ pub enum GasCost {
 		value: U256,
 		/// Call gas.
 		gas: U256,
+		/// True if target has not been previously accessed in this transaction
+		target_is_cold: bool,
 		/// Whether the target exists.
 		target_exists: bool,
 	},
@@ -744,6 +890,8 @@ pub enum GasCost {
 		value: U256,
 		/// Call gas.
 		gas: U256,
+		/// True if target has not been previously accessed in this transaction
+		target_is_cold: bool,
 		/// Whether the target exists.
 		target_exists: bool,
 	},
@@ -751,6 +899,8 @@ pub enum GasCost {
 	DelegateCall {
 		/// Call gas.
 		gas: U256,
+		/// True if target has not been previously accessed in this transaction
+		target_is_cold: bool,
 		/// Whether the target exists.
 		target_exists: bool,
 	},
@@ -758,6 +908,8 @@ pub enum GasCost {
 	StaticCall {
 		/// Call gas.
 		gas: U256,
+		/// True if target has not been previously accessed in this transaction
+		target_is_cold: bool,
 		/// Whether the target exists.
 		target_exists: bool,
 	},
@@ -765,6 +917,8 @@ pub enum GasCost {
 	Suicide {
 		/// Value.
 		value: U256,
+		/// True if target has not been previously accessed in this transaction
+		target_is_cold: bool,
 		/// Whether the target exists.
 		target_exists: bool,
 		/// Whether the target has already been removed.
@@ -778,6 +932,8 @@ pub enum GasCost {
 		current: H256,
 		/// New value.
 		new: H256,
+		/// True if target has not been previously accessed in this transaction
+		target_is_cold: bool,
 	},
 	/// Gas cost for `SHA3`.
 	Sha3 {
@@ -793,6 +949,8 @@ pub enum GasCost {
 	},
 	/// Gas cost for `EXTCODECOPY`.
 	ExtCodeCopy {
+		/// True if target has not been previously accessed in this transaction
+		target_is_cold: bool,
 		/// Length.
 		len: U256,
 	},
@@ -814,7 +972,21 @@ pub enum GasCost {
 		len: U256,
 	},
 	/// Gas cost for `SLOAD`.
-	SLoad,
+	SLoad {
+		/// True if target has not been previously accessed in this transaction
+		target_is_cold: bool,
+	},
+}
+
+/// Storage opcode will access. Used for tracking accessed storage (EIP-2929).
+#[derive(Debug, Clone, Copy)]
+pub enum StorageTarget {
+	/// No storage access
+	None,
+	/// Accessing address
+	Address(H160),
+	/// Accessing storage slot within an address
+	Slot(H160, H256),
 }
 
 /// Memory cost.
@@ -835,6 +1007,10 @@ pub enum TransactionCost {
 		zero_data_len: usize,
 		/// Length of non-zeros in transaction data.
 		non_zero_data_len: usize,
+		/// Number of addresses in transaction access list (see EIP-2930)
+		access_list_address_len: usize,
+		/// Total number of storage keys in transaction access list (see EIP-2930)
+		access_list_storage_len: usize,
 	},
 	/// Create transaction cost.
 	Create {
@@ -842,6 +1018,10 @@ pub enum TransactionCost {
 		zero_data_len: usize,
 		/// Length of non-zeros in transaction data.
 		non_zero_data_len: usize,
+		/// Number of addresses in transaction access list (see EIP-2930)
+		access_list_address_len: usize,
+		/// Total number of storage keys in transaction access list (see EIP-2930)
+		access_list_storage_len: usize,
 	},
 }
 
