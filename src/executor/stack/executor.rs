@@ -235,6 +235,16 @@ pub enum PrecompileFailure {
 	/// Mark this failure as fatal, and all EVM execution stacks must be exited.
 	Fatal { exit_status: ExitFatal },
 }
+impl From<ExitError> for PrecompileFailure {
+	fn from(exit_status: ExitError) -> Self {
+		Self::Error { exit_status }
+	}
+}
+impl From<ExitFatal> for PrecompileFailure {
+	fn from(exit_status: ExitFatal) -> Self {
+		Self::Fatal { exit_status }
+	}
+}
 
 /// A precompile result.
 pub type PrecompileResult = Result<PrecompileOutput, PrecompileFailure>;
