@@ -243,12 +243,6 @@ impl From<ExitFatal> for PrecompileFailure {
 	}
 }
 
-impl From<ExitError> for PrecompileFailure {
-	fn from(error: ExitError) -> PrecompileFailure {
-		PrecompileFailure::Error { exit_status: error }
-	}
-}
-
 /// Handle provided to a precompile to interact with the EVM.
 pub trait PrecompileHandle {
 	/// Perform subcall in provided context.
