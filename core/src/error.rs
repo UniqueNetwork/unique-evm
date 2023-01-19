@@ -18,7 +18,7 @@ pub enum Capture<E, T> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
 	feature = "with-codec",
-	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+	derive(scale_codec::Encode, scale_codec::Decode, scale_info::TypeInfo)
 )]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExitReason {
@@ -59,7 +59,7 @@ impl ExitReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(
 	feature = "with-codec",
-	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+	derive(scale_codec::Encode, scale_codec::Decode, scale_info::TypeInfo)
 )]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExitSucceed {
@@ -81,7 +81,7 @@ impl From<ExitSucceed> for ExitReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(
 	feature = "with-codec",
-	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+	derive(scale_codec::Encode, scale_codec::Decode, scale_info::TypeInfo)
 )]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExitRevert {
@@ -99,7 +99,7 @@ impl From<ExitRevert> for ExitReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
 	feature = "with-codec",
-	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+	derive(scale_codec::Encode, scale_codec::Decode, scale_info::TypeInfo)
 )]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExitError {
@@ -127,9 +127,9 @@ pub enum ExitError {
 	/// Create init code exceeds limit (runtime).
 	#[cfg_attr(feature = "with-codec", codec(index = 7))]
 	CreateContractLimit,
-	/// Starting byte must not begin with 0xef. See [EIP-3541](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-3541.md).
-	#[cfg_attr(feature = "with-codec", codec(index = 14))]
-	InvalidCode,
+	/// Invalid opcode during execution or starting byte is 0xef. See [EIP-3541](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-3541.md).
+	#[cfg_attr(feature = "with-codec", codec(index = 15))]
+	InvalidCode(Opcode),
 
 	/// An opcode accesses external information, but the request is off offset
 	/// limit (runtime).
@@ -166,7 +166,7 @@ impl From<ExitError> for ExitReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
 	feature = "with-codec",
-	derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+	derive(scale_codec::Encode, scale_codec::Decode, scale_info::TypeInfo)
 )]
 #[cfg_attr(feature = "with-serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExitFatal {
